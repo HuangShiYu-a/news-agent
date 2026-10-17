@@ -27,10 +27,10 @@ def _short(value, limit: int = 120) -> str:
 def main() -> int:
     from app import config
     from app.db import init_db
-    from app.services.briefing import generate
+    from app.services.briefing import BusyError, generate
 
     mode_note = ("（fixtures 虚构测试样例，可复现）"
-                 if config.settings.news_source == "demo" else "")
+                 if config.settings.news_source == "demo" else "（RSS 实时抓取）")
     print(f"新闻来源模式：{config.settings.news_source}{mode_note}")
     print("正在生成简报（真实模型调用，工具调用将实时打印）…\n")
 
@@ -39,7 +39,11 @@ def main() -> int:
               f" -> {record.status} ({record.duration_ms}ms)")
 
     init_db()
-    summary = generate(trigger="manual", echo=echo)
+    try:
+        summary = generate(trigger="manual", echo=echo)
+    except BusyError as e:
+        print(f"无法开始：{e}")
+        return 2
 
     print(f"\n任务 #{summary['run_id']}：{summary['status']}"
           + (f"（{summary['fail_reason']}）" if summary.get("fail_reason") else ""))

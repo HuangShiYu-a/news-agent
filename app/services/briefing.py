@@ -1,9 +1,12 @@
 """业务协调层（design.md §4 / §8 / §9）：建任务 → 准备材料 → 跑 Agent →
 校验产物（失败同对话修正一次）→ 落库。
 
-阶段一版本：同步入口 generate()，供 scripts/run_demo.py 调用。
-阶段二接入 FastAPI（asyncio.to_thread + 进程内锁）与 RSS 抓取，
-阶段三接入定时调度与未读通知——三条路径共用本入口。
+三个入口共用同一条执行路径（design.md §4 关键原则）：
+- generate()      命令行（scripts/run_demo.py）：同步创建并执行
+- start_generate() API（POST /api/generate）：创建后在后台线程执行，立即返回任务 ID
+- scheduler       定时触发（阶段三接入）
+并发防护（D20）：进程内 threading.Lock 保护"检查无执行中任务 + 建任务"，
+"先查再建"不是原子操作，多线程下会竞争；单进程单 worker 约束下这把锁足够。
 注意：本模块不调用 init_db()（清扫会误杀执行中任务，只能进程启动时做）。
 """
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,8 +29,9 @@ from app.agent.tools.base import ToolRegistry
 from app.agent.tools.bash import build_bash_tool
 from app.agent.tools.fs import build_fs_tools
 from app.db import get_conn, now_iso
+from app.fetcher.rss import FetchError, assign_news_ids, fetch_all
 
-# 演示默认偏好（settings 表为空时种子写入；阶段二页面保存后覆盖）
+# 演示默认偏好（settings 表为空时种子写入；页面保存后覆盖）
 DEFAULT_PREFERENCES = {
     "name": "演示用户",
     "persona": "关注 AI 应用开发的工程师",
@@ -39,6 +44,12 @@ _NEWS_ID_RE = re.compile(r"\[(N\d+)\]")
 _NO_MATCH_PHRASE = "本期暂无匹配新闻"
 _RUN_UPDATABLE = {"status", "fail_reason", "fail_detail", "fetch_report",
                   "briefing", "started_at", "ended_at"}
+
+_create_lock = threading.Lock()  # D20：保护"查重 + 建任务"的原子性
+
+
+class BusyError(RuntimeError):
+    """已有生成任务在执行中。"""
 
 
 def load_or_seed_settings() -> dict:
@@ -58,6 +69,26 @@ def load_or_seed_settings() -> dict:
             "keywords": json.loads(row["keywords"])}
 
 
+def save_settings(name: str, persona: str, topics: list[str],
+                  keywords: list[str]) -> dict:
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("姓名不能为空")
+    topics = [t.strip() for t in topics if t and t.strip()][:10]
+    keywords = [k.strip() for k in keywords if k and k.strip()][:15]
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO settings (id, name, persona, topics, keywords, updated_at) "
+            "VALUES (1, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, "
+            "persona=excluded.persona, topics=excluded.topics, "
+            "keywords=excluded.keywords, updated_at=excluded.updated_at",
+            (name, persona.strip()[:200],
+             json.dumps(topics, ensure_ascii=False),
+             json.dumps(keywords, ensure_ascii=False), now_iso()))
+    return load_or_seed_settings()
+
+
 def _brief_date() -> str:
     return datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d")
 
@@ -65,24 +96,37 @@ def _brief_date() -> str:
 def _render_preferences(s: dict) -> str:
     return ("# 订阅偏好\n\n"
             f"- 姓名：{s['name']}\n"
-            f"- 身份：{s['persona']}\n"
-            f"- 关注话题：{'、'.join(s['topics'])}\n"
-            f"- 关键词：{'、'.join(s['keywords'])}\n")
+            f"- 身份：{s['persona'] or '（未填写）'}\n"
+            f"- 关注话题：{'、'.join(s['topics']) or '（未设置）'}\n"
+            f"- 关键词：{'、'.join(s['keywords']) or '（未设置）'}\n")
 
 
-def _prepare_workspace(workdir: Path, settings: dict) -> None:
-    """准备工作目录（固定步骤，非 Agent 决策）。"""
+def _prepare_workspace(workdir: Path, settings: dict) -> list[dict] | None:
+    """准备工作目录（固定步骤，非 Agent 决策）。
+
+    返回抓取报告（真实模式；部分源失败时含失败明细），演示模式返回 None。
+    全部源失败抛 FetchError（D13）。
+    """
     (workdir / "news").mkdir(parents=True, exist_ok=True)
     if config.settings.news_source == "demo":
         fixtures = sorted(config.settings.fixtures_dir.glob("*.jsonl"))
         if not fixtures:
-            raise RuntimeError("fixtures 目录为空：演示模式依赖虚构新闻样例")
+            raise FetchError("fixtures 目录为空：演示模式依赖虚构新闻样例")
         for f in fixtures:
             shutil.copy(f, workdir / "news" / f.name)
+        report = None
     else:
-        raise RuntimeError("RSS 真实模式在阶段二实现；当前请使用 NEWS_SOURCE=demo")
+        urls = config.settings.rss_source_list
+        if not urls:
+            raise FetchError("真实模式需要在 .env 配置 RSS_SOURCES（逗号分隔的源列表）")
+        by_source, report = fetch_all(urls)
+        for source, items in assign_news_ids(by_source).items():
+            lines = [json.dumps(item, ensure_ascii=False) for item in items]
+            (workdir / "news" / f"{source}.jsonl").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8")
     (workdir / "preferences.md").write_text(_render_preferences(settings),
                                             encoding="utf-8")
+    return report
 
 
 def load_material_news(workdir: Path) -> dict[str, dict]:
@@ -147,34 +191,58 @@ def _summary_json(value) -> str:
     return json.dumps(value, ensure_ascii=False)[:500]
 
 
-def generate(trigger: str = "manual", client=None,
-             echo: Callable[[int, ToolCallRecord], None] | None = None) -> dict:
-    """生成一次简报（同步入口）。
+def _create_run(trigger: str) -> int:
+    """锁内完成"无执行中任务检查 + 建任务"（D20）；忙时抛 BusyError。"""
+    with _create_lock:
+        with get_conn() as conn:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running')"
+            ).fetchone()[0]
+            if active:
+                raise BusyError("已有生成任务在执行中，请等待完成后再试")
+            cur = conn.execute(
+                "INSERT INTO runs (trigger_type, status, brief_date, is_read, created_at) "
+                "VALUES (?, 'pending', ?, ?, ?)",
+                (trigger, _brief_date(), 1 if trigger == "manual" else 0, now_iso()))
+            return cur.lastrowid
 
-    trigger: manual（页面手动，不产生未读）/ scheduled（定时，成功后未读）
-    client:  可注入的模型客户端（测试用；默认按配置构造 DeepSeek 客户端）
-    echo:    可选回调 (seq, record)，命令行实时打印工具调用用
-    """
+
+def start_generate(trigger: str = "manual") -> int:
+    """API 入口：建任务（锁内查重）后立即返回任务 ID，执行放后台线程。"""
     if trigger not in ("manual", "scheduled"):
         raise ValueError("trigger 只能是 manual 或 scheduled")
+    run_id = _create_run(trigger)
+    threading.Thread(target=_execute_run, args=(run_id, trigger),
+                     daemon=True, name=f"briefing-run-{run_id}").start()
+    return run_id
+
+
+def generate(trigger: str = "manual", client=None,
+             echo: Callable[[int, ToolCallRecord], None] | None = None) -> dict:
+    """命令行入口：同步创建并执行（供 scripts/run_demo.py）。"""
+    if trigger not in ("manual", "scheduled"):
+        raise ValueError("trigger 只能是 manual 或 scheduled")
+    run_id = _create_run(trigger)
+    return _execute_run(run_id, trigger, client=client, echo=echo)
+
+
+def _execute_run(run_id: int, trigger: str, client=None,
+                 echo: Callable[[int, ToolCallRecord], None] | None = None) -> dict:
+    """执行一次生成任务的全过程（三条入口共用的唯一执行路径）。"""
     t0 = time.monotonic()
     settings = load_or_seed_settings()
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO runs (trigger_type, status, brief_date, is_read, created_at) "
-            "VALUES (?, 'pending', ?, ?, ?)",
-            (trigger, _brief_date(), 1 if trigger == "manual" else 0, now_iso()))
-        run_id = cur.lastrowid
     workdir = config.settings.data_dir / "runs" / str(run_id)
     _update_run(run_id, status="running", started_at=now_iso())
 
     # —— 材料准备（固定步骤）——
     try:
-        _prepare_workspace(workdir, settings)
+        report = _prepare_workspace(workdir, settings)
+        if report is not None and any(not r["ok"] for r in report):
+            _update_run(run_id, fetch_report=json.dumps(report, ensure_ascii=False))
     except Exception as e:
         _update_run(run_id, status="failed", fail_reason="fetch_failed",
                     fail_detail=str(e), ended_at=now_iso())
-        return _summary(run_id, "failed", workdir, t0,
+        return _summary(run_id, trigger, "failed", workdir, t0,
                         fail_reason="fetch_failed", fail_detail=str(e))
 
     registry = ToolRegistry(build_fs_tools(workdir) + [build_bash_tool(workdir)])
@@ -244,16 +312,16 @@ def generate(trigger: str = "manual", client=None,
     _update_run(run_id, status=final_status, ended_at=now_iso(),
                 fail_reason=fail_reason, fail_detail=fail_detail,
                 briefing=briefing_text or None)
-    return _summary(run_id, final_status, workdir, t0, turns=turns,
+    return _summary(run_id, trigger, final_status, workdir, t0, turns=turns,
                     fail_reason=fail_reason, fail_detail=fail_detail,
                     briefing=briefing_text, tool_calls=seq)
 
 
-def _summary(run_id: int, status: str, workdir: Path, t0: float,
+def _summary(run_id: int, trigger: str, status: str, workdir: Path, t0: float,
              turns: int = 0, fail_reason: str | None = None,
              fail_detail: str | None = None, briefing: str = "",
              tool_calls: int = 0) -> dict:
-    return {"run_id": run_id, "status": status, "trigger": "manual",
+    return {"run_id": run_id, "status": status, "trigger": trigger,
             "turns": turns, "tool_calls": tool_calls,
             "fail_reason": fail_reason, "fail_detail": fail_detail,
             "briefing": briefing, "workdir": str(workdir),
