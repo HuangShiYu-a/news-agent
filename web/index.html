@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 新闻简报 Agent</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --border:#e3e5e8; --text:#222; --muted:#6b7280;
+          --accent:#2563eb; --ok:#16a34a; --err:#dc2626; --warn:#b45309; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+           padding:14px 24px; background:var(--card); border-bottom:1px solid var(--border);
+           position:sticky; top:0; z-index:5; }
+  h1 { font-size:18px; margin:0; }
+  h3 { margin:0 0 8px; font-size:14px; }
+  main { max-width:1000px; margin:20px auto; padding:0 16px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px;
+          padding:16px 18px; }
+  .card h2 { margin:0 0 12px; font-size:15px; color:var(--muted); font-weight:600; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:10px; }
+  input { display:block; width:100%; margin-top:4px; padding:8px 10px;
+          border:1px solid var(--border); border-radius:6px; font-size:14px; }
+  button { padding:8px 16px; border:none; border-radius:6px; background:var(--accent);
+           color:#fff; font-size:14px; cursor:pointer; }
+  button:disabled { background:#9db4e8; cursor:not-allowed; }
+  button.secondary { background:#eef2ff; color:var(--accent); }
+  .banner { display:flex; gap:10px; align-items:center; padding:10px 16px;
+            background:#fef9c3; border:1px solid #fde047; border-radius:8px;
+            font-size:14px; }
+  .hidden { display:none; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:10px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border);
+           vertical-align:top; word-break:break-all; }
+  th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  .status-succeeded { color:var(--ok); } .status-failed { color:var(--err); }
+  .status-running { color:var(--accent); } .status-pending { color:var(--muted); }
+  pre { white-space:pre-wrap; word-break:break-word; background:#fafafa;
+        border:1px solid var(--border); border-radius:8px; padding:14px;
+        font-size:13px; line-height:1.6; max-height:480px; overflow:auto; margin:8px 0 0; }
+  ul#historyList { list-style:none; margin:0; padding:0; }
+  #historyList li { display:flex; justify-content:space-between; gap:8px;
+                    padding:8px 4px; border-bottom:1px solid var(--border);
+                    cursor:pointer; font-size:13px; }
+  #historyList li:hover { background:#f8f9fb; }
+  .badge { font-size:12px; padding:3px 10px; border-radius:999px; white-space:nowrap; }
+  .badge.demo { background:#fff7ed; color:var(--warn); border:1px solid #fed7aa; }
+  .badge.rss { background:#f0fdf4; color:var(--ok); border:1px solid #bbf7d0; }
+  .unread-dot { color:var(--err); font-weight:700; }
+  .meta { color:var(--muted); font-size:12px; }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding:16px; }
+  .msg { font-size:13px; margin-left:10px; color:var(--muted); }
+  .msg.error { color:var(--err); }
+  #runStatus { font-size:13px; margin-top:12px; color:var(--muted); }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI 新闻简报 Agent</h1>
+  <span id="modeBadge" class="badge">…</span>
+  <span id="metaInfo" class="meta"></span>
+</header>
+
+<main>
+  <div id="noticeBanner" class="banner hidden">
+    <span>📬 今日简报已生成</span>
+    <button class="secondary" id="noticeView">查看</button>
+  </div>
+
+  <section class="card">
+    <h2>订阅设置</h2>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 16px;">
+      <label>姓名<input id="name" maxlength="50"></label>
+      <label>身份说明<input id="persona" maxlength="200" placeholder="如：关注 AI 应用开发的工程师"></label>
+    </div>
+    <label>关注话题（逗号分隔，如：AI Agent，开源模型）<input id="topics"></label>
+    <label>关键词（逗号分隔，如：MCP，function calling）<input id="keywords"></label>
+    <button id="saveSettings">保存设置</button><span id="settingsMsg" class="msg"></span>
+  </section>
+
+  <section class="card">
+    <h2>生成简报</h2>
+    <button id="btnGenerate">立即生成</button><span id="genMsg" class="msg"></span>
+    <div id="runStatus"></div>
+    <table class="hidden" id="toolCallsTable">
+      <thead><tr><th>#</th><th>工具</th><th>参数</th><th>结果</th><th>状态</th><th>耗时</th></tr></thead>
+      <tbody id="toolCallsBody"></tbody>
+    </table>
+    <div id="briefingSection" class="hidden">
+      <h3>简报内容</h3>
+      <pre id="briefing"></pre>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>历史简报</h2>
+    <ul id="historyList"></ul>
+    <div class="note" id="historyNote"></div>
+  </section>
+</main>
+
+<footer>
+  通知为站内实现（页面打开时轮询提醒），不提供外部推送 ·
+  每日定时自动生成（时间见右上角） · 数据来源：<span id="srcNote">…</span>
+</footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let pollTimer = null;
+let currentRunId = null;
+
+const STATUS_TEXT = { pending: "等待中", running: "执行中", succeeded: "成功", failed: "失败" };
+const TRIGGER_TEXT = { manual: "手动", scheduled: "定时" };
+
+async function api(path, opts = {}) {
+  const resp = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try { detail = (await resp.json()).detail || detail; } catch (e) {}
+    const err = new Error(detail);
+    err.status = resp.status;
+    throw err;
+  }
+  return resp.json();
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const trunc = (s, n = 90) => (s && s.length > n ? s.slice(0, n) + "…" : (s ?? ""));
+const fmtTime = (s) => String(s ?? "").slice(0, 19).replace("T", " ");
+
+// —— 元信息与设置 ——
+
+async function loadMeta() {
+  const m = await api("/api/meta");
+  const badge = $("#modeBadge");
+  badge.className = "badge " + m.news_source;
+  badge.textContent = m.news_source === "demo"
+    ? "演示模式 · 虚构测试新闻样例" : "真实模式 · RSS 实时抓取";
+  $("#metaInfo").textContent = `模型 ${m.llm_model} · 每日定时 ${m.daily_run_at}（${m.timezone}）`;
+  $("#srcNote").textContent = m.news_source === "demo"
+    ? "fixtures 虚构测试新闻（内容为编造，仅用于演示）" : "RSS 实时抓取";
+}
+
+async function loadSettings() {
+  const s = await api("/api/settings");
+  $("#name").value = s.name;
+  $("#persona").value = s.persona;
+  $("#topics").value = s.topics.join("，");
+  $("#keywords").value = s.keywords.join("，");
+}
+
+async function saveSettings() {
+  const payload = {
+    name: $("#name").value.trim(),
+    persona: $("#persona").value.trim(),
+    topics: $("#topics").value.split(/[,，]/).map((t) => t.trim()).filter(Boolean),
+    keywords: $("#keywords").value.split(/[,，]/).map((t) => t.trim()).filter(Boolean),
+  };
+  if (!payload.name) { $("#settingsMsg").textContent = "姓名不能为空"; return; }
+  try {
+    await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    $("#settingsMsg").textContent = "已保存 ✓";
+  } catch (e) {
+    $("#settingsMsg").textContent = `保存失败：${e.message}`;
+  }
+  setTimeout(() => { $("#settingsMsg").textContent = ""; }, 2500);
+}
+
+// —— 生成与轮询 ——
+
+function setGenerating(on) { $("#btnGenerate").disabled = on; }
+
+async function startGenerate() {
+  $("#genMsg").textContent = "";
+  try {
+    const { run_id } = await api("/api/generate", { method: "POST" });
+    currentRunId = run_id;
+    setGenerating(true);
+    $("#briefingSection").classList.add("hidden");
+    $("#toolCallsBody").innerHTML = "";
+    $("#runStatus").textContent = `任务 #${run_id} 已创建，等待执行…`;
+    pollLoop();
+  } catch (e) {
+    $("#genMsg").className = "msg error";
+    $("#genMsg").textContent = e.status === 409 ? `⛔ ${e.message}` : `出错了：${e.message}`;
+  }
+}
+
+function stopPolling() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+}
+
+async function pollLoop() {
+  try {
+    const run = await api(`/api/runs/${currentRunId}`);
+    renderRun(run);
+    await refreshToolCalls(currentRunId);
+    if (run.status === "succeeded" || run.status === "failed") {
+      stopPolling();
+      setGenerating(false);
+      loadHistory();
+      refreshUnread();
+      if (run.status === "failed") {
+        $("#genMsg").className = "msg error";
+        $("#genMsg").textContent = `任务失败（${run.fail_reason || "未知原因"}）`;
+      }
+      return;
+    }
+  } catch (e) {
+    stopPolling();
+    setGenerating(false);
+    $("#genMsg").className = "msg error";
+    $("#genMsg").textContent = `轮询出错：${e.message}`;
+    return;
+  }
+  pollTimer = setTimeout(pollLoop, 2000);
+}
+
+function renderRun(run) {
+  let html = `任务 #${run.id} · ${esc(TRIGGER_TEXT[run.trigger_type] || run.trigger_type)} · `
+    + `<span class="status-${run.status}">${STATUS_TEXT[run.status] || run.status}</span>`;
+  if (run.fail_reason) html += ` · <span class="status-failed">${esc(run.fail_reason)}</span>`;
+  if (run.created_at) html += ` · ${esc(fmtTime(run.created_at))}`;
+  if (Array.isArray(run.fetch_report)) {
+    const failed = run.fetch_report.filter((r) => !r.ok);
+    if (failed.length) html += ` · ⚠ ${failed.length} 个新闻源抓取失败（任务已继续）`;
+  }
+  $("#runStatus").innerHTML = html;
+  if (run.briefing) {
+    $("#briefingSection").classList.remove("hidden");
+    $("#briefing").textContent = run.briefing;
+  }
+}
+
+async function refreshToolCalls(runId) {
+  const calls = await api(`/api/runs/${runId}/tool-calls`);
+  if (!calls.length) return;
+  $("#toolCallsTable").classList.remove("hidden");
+  $("#toolCallsBody").innerHTML = calls.map((c) => `
+    <tr>
+      <td>${c.seq}</td>
+      <td><code>${esc(c.tool_name)}</code></td>
+      <td>${esc(trunc(c.args_summary))}</td>
+      <td>${esc(trunc(c.result_summary))}</td>
+      <td class="status-${c.status}">${c.status === "succeeded" ? "成功" : "失败"}</td>
+      <td>${c.duration_ms}ms</td>
+    </tr>`).join("");
+}
+
+// —— 历史与未读通知 ——
+
+async function loadHistory() {
+  const runs = await api("/api/runs?limit=30");
+  const list = $("#historyList");
+  if (!runs.length) {
+    list.innerHTML = "";
+    $("#historyNote").textContent = "暂无历史任务";
+    return;
+  }
+  $("#historyNote").textContent = "点击任意一条查看该次生成的简报";
+  list.innerHTML = runs.map((r) => {
+    const unread = (r.status === "succeeded" && !r.is_read)
+      ? ' <span class="unread-dot">● 未读</span>' : "";
+    const fail = r.fail_reason ? `（${esc(r.fail_reason)}）` : "";
+    return `<li data-id="${r.id}">
+      <span>#${r.id} · ${esc(r.brief_date)} · ${esc(TRIGGER_TEXT[r.trigger_type] || "")}</span>
+      <span class="status-${r.status}">${STATUS_TEXT[r.status] || r.status}${fail}${unread}</span>
+    </li>`;
+  }).join("");
+  list.querySelectorAll("li").forEach((li) => {
+    li.onclick = () => viewRun(Number(li.dataset.id));
+  });
+}
+
+async function viewRun(runId) {
+  try {
+    const run = await api(`/api/runs/${runId}`);
+    currentRunId = runId;
+    renderRun(run);
+    await refreshToolCalls(runId);
+    if (run.is_read === 0) {
+      await api(`/api/runs/${runId}/read`, { method: "POST" }).catch(() => {});
+      loadHistory();
+      refreshUnread();
+    }
+  } catch (e) {
+    $("#genMsg").className = "msg error";
+    $("#genMsg").textContent = `查看失败：${e.message}`;
+  }
+}
+
+async function refreshUnread() {
+  try {
+    const u = await api("/api/notifications/unread");
+    const banner = $("#noticeBanner");
+    if (u.count > 0 && u.latest) {
+      banner.classList.remove("hidden");
+      banner.firstElementChild.textContent = `📬 今日简报已生成（${u.count} 条未读）`;
+    } else {
+      banner.classList.add("hidden");
+    }
+  } catch (e) { /* 轮询失败不打扰用户 */ }
+}
+
+// —— 初始化 ——
+
+(async function init() {
+  await loadMeta();
+  await loadSettings();
+  loadHistory();
+  refreshUnread();
+  setInterval(refreshUnread, 5000);
+
+  // 页面刷新后若仍有执行中的任务，自动续接轮询
+  try {
+    const runs = await api("/api/runs?limit=10");
+    const active = runs.find((r) => r.status === "pending" || r.status === "running");
+    if (active) {
+      currentRunId = active.id;
+      setGenerating(true);
+      $("#runStatus").textContent = `发现执行中的任务 #${active.id}，续接轮询…`;
+      pollLoop();
+    }
+  } catch (e) { /* 忽略 */ }
+
+  $("#saveSettings").onclick = saveSettings;
+  $("#btnGenerate").onclick = startGenerate;
+  $("#noticeView").onclick = async () => {
+    try {
+      const u = await api("/api/notifications/unread");
+      if (u.latest) viewRun(u.latest.id);
+    } catch (e) { /* 忽略 */ }
+  };
+})();
+</script>
+</body>
+</html>
