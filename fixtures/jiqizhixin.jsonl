@@ -1,0 +1,4 @@
+{"news_id": "N0011", "title": "国产开源大模型「昆仑 3.0」发布：多模态能力对标国际一流", "url": "https://www.jiqizhixin.com/fictional/N0011", "published_at": "2026-10-16 10:00", "source": "机器之心", "summary": "昆仑 3.0 采用混合专家架构，权重以 Apache 2.0 协议开放，图文理解与文档问答评测超过多款闭源模型。"}
+{"news_id": "N0012", "title": "具身智能公司「行者机器人」完成 5 亿元 B 轮融资", "url": "https://www.jiqizhixin.com/fictional/N0012", "published_at": "2026-10-16 08:30", "source": "机器之心", "summary": "本轮资金将用于仓储物流场景的具身智能机器人量产，公司称其调度系统已接入大模型任务规划。"}
+{"news_id": "N0013", "title": "AI Agent 编排框架横评：LangGraph、自研循环与 MCP 的取舍", "url": "https://www.jiqizhixin.com/fictional/N0013", "published_at": "2026-10-15 20:15", "source": "机器之心", "summary": "文章对比三类 Agent 编排方案的控制粒度、调试成本与可移植性，并给出选型建议。"}
+{"news_id": "N0014", "title": "芯片巨头发布新一代推理加速卡，能效比提升 40%", "url": "https://www.jiqizhixin.com/fictional/N0014", "published_at": "2026-10-15 16:40", "source": "机器之心", "summary": "该加速卡面向大模型推理场景，配套软件栈支持主流开源模型一键部署。"}
