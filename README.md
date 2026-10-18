@@ -19,7 +19,8 @@
 环境要求：Windows 10/11、Python 3.10+（`py` 启动器）、Git for Windows。
 
 ```bat
-git clone <仓库地址> && cd news-agent
+git clone https://github.com/HuangShiYu-a/news-agent.git
+cd news-agent
 py -m venv .venv
 .venv\Scripts\pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 copy .env.example .env
@@ -46,7 +47,7 @@ copy .env.example .env
 | 模式 | 说明 |
 |---|---|
 | `demo`（默认） | 使用 `fixtures/` 中的**虚构测试新闻样例**（14 条，内容为编造，仅用于演示），不联网抓取、完全可复现 |
-| `rss` | 实时抓取 `RSS_SOURCES` 配置的源（默认 Hacker News / TechCrunch / 机器之心，均已实测直连可达）；部分源失败会继续并记录到任务，全部失败任务记 `fetch_failed`，**绝不静默回退到样例数据** |
+| `rss` | 实时抓取 `RSS_SOURCES` 配置的源（默认 Hacker News / TechCrunch / 机器之心，均已实测直连可达）；采集层做确定性清洗：发布时间统一为 Asia/Shanghai、默认只保留最近 48 小时发布的新闻（`RSS_FRESHNESS_HOURS`，0=关闭窗口）、按保守规则归一化 URL 去重（缺发布时间的条目不进入材料）；部分源失败会继续并记录到任务，全部失败或窗口内无有效新闻任务记 `fetch_failed`，**绝不静默回退到样例数据** |
 
 ## 运行测试
 
@@ -60,7 +61,7 @@ copy .env.example .env
 
 - **通知为站内实现**：定时简报生成后，打开的页面出现未读提醒（"今日简报已生成"），查看后清除；不提供页面关闭后的外部推送（无邮件 / IM）。题目允许自定推送位置；演进方向是在生成成功后挂渠道适配器，生成与发送的边界已经存在。
 - **bash 工具是受限执行**：白名单只读命令 `pwd` / `ls` / `head`，极小选项集，**不经过 shell 解释**（`shell=False` 直接执行 Git for Windows 自带的命令二进制），路径参数须在本次任务的工作目录内——管道、重定向、命令组合、任意脚本在没有 shell 的情况下天然不可能。真实进程、真实输出，非预设结果。
-- **产物校验是引用可追溯性检查**（news_id 归属、链接一致、无重复、空匹配声明、非空），不是对摘要内容的事实核查。
+- **产物校验是引用可追溯性检查**（news_id 归属、条目内链接与材料逐字一致、无重复、空匹配声明、非空），不是对摘要内容的事实核查；**新闻相关性由 LLM 判断，校验器不做相关性裁决**（"本期暂无匹配新闻"只做格式检查）。
 - **单用户、单进程单 worker**：按单个本地用户实现；无账号体系；并发防护用进程内锁，请保持 `--workers 1` 运行。
 - **Agent 没有任何发送或联网工具**：五个工具都只能访问本次任务的独立工作目录（`data/runs/{任务ID}/`）。
 - 演示模式样例为**虚构测试新闻**，页面与本文件均标注；样例日期固定不平移。

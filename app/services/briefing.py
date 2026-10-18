@@ -29,7 +29,7 @@ from app.agent.tools.base import ToolRegistry
 from app.agent.tools.bash import build_bash_tool
 from app.agent.tools.fs import build_fs_tools
 from app.db import get_conn, now_iso
-from app.fetcher.rss import FetchError, assign_news_ids, fetch_all
+from app.fetcher.rss import FetchError, collect_materials
 
 # 演示默认偏好（settings 表为空时种子写入；页面保存后覆盖）
 DEFAULT_PREFERENCES = {
@@ -42,6 +42,11 @@ DEFAULT_PREFERENCES = {
 _BRIEFING_FILENAME = "briefing.md"
 _NEWS_ID_RE = re.compile(r"\[(N\d+)\]")
 _NO_MATCH_PHRASE = "本期暂无匹配新闻"
+# 条目锚点：行首列表标记（1. / - / * 等）+ 方括号 news_id，允许其间有粗体/斜体标记
+_ENTRY_RE = re.compile(r"(?m)^\s*(?:\d+[.、)]|[-*])\s*[*_]*\s*\[(N\d+)\]")
+# URL 提取：止于空白与常见中英文标点/括号；尾部标点再单独剥离
+_URL_RE = re.compile(r"https?://[^\s　，。、；：（）()【】\[\]<>\"'“”]+")
+_URL_TRAILING = ".,;:!?。，、；：！？"
 _RUN_UPDATABLE = {"status", "fail_reason", "fail_detail", "fetch_report",
                   "briefing", "started_at", "ended_at"}
 
@@ -119,8 +124,11 @@ def _prepare_workspace(workdir: Path, settings: dict) -> list[dict] | None:
         urls = config.settings.rss_source_list
         if not urls:
             raise FetchError("真实模式需要在 .env 配置 RSS_SOURCES（逗号分隔的源列表）")
-        by_source, report = fetch_all(urls)
-        for source, items in assign_news_ids(by_source).items():
+        by_source, report = collect_materials(
+            urls,
+            now=datetime.now(ZoneInfo(config.TIMEZONE)),
+            freshness_hours=config.settings.rss_freshness_hours)
+        for source, items in by_source.items():
             lines = [json.dumps(item, ensure_ascii=False) for item in items]
             (workdir / "news" / f"{source}.jsonl").write_text(
                 "\n".join(lines) + "\n", encoding="utf-8")
@@ -142,6 +150,28 @@ def load_material_news(workdir: Path) -> dict[str, dict]:
     return news
 
 
+def _first_url(segment: str) -> str | None:
+    m = _URL_RE.search(segment)
+    return m.group(0).rstrip(_URL_TRAILING) if m else None
+
+
+def _extract_citations(text: str) -> list[tuple[str, str]]:
+    """按条目结构提取被引用的新闻条目，返回 [(news_id, 条目段文本)]。
+
+    优先以"行首列表标记 + [news_id]"为条目锚点——正文中非条目位置的
+    提及不计入引用；若全文没有任何条目锚点，退化为按任意位置的
+    [news_id] 分段（兼容模型未使用列表标记的排版）。
+    """
+    anchors = list(_ENTRY_RE.finditer(text))
+    if not anchors:
+        anchors = list(_NEWS_ID_RE.finditer(text))
+    citations: list[tuple[str, str]] = []
+    for i, m in enumerate(anchors):
+        end = anchors[i + 1].start() if i + 1 < len(anchors) else len(text)
+        citations.append((m.group(1), text[m.end():end]))
+    return citations
+
+
 def validate_briefing(workdir: Path) -> tuple[bool, list[str]]:
     """产物校验（design.md §9）：引用可追溯性检查，非事实核查。"""
     path = workdir / _BRIEFING_FILENAME
@@ -151,11 +181,12 @@ def validate_briefing(workdir: Path) -> tuple[bool, list[str]]:
     if not text.strip():
         return False, ["briefing.md 是空文件"]
     news = load_material_news(workdir)
-    ids = _NEWS_ID_RE.findall(text)
-    if not ids:
+    citations = _extract_citations(text)
+    if not citations:
         if _NO_MATCH_PHRASE in text:
             return True, []
         return False, ['简报中没有任何 [news_id] 引用，也未声明"本期暂无匹配新闻"']
+    ids = [news_id for news_id, _ in citations]
     errors: list[str] = []
     seen: set[str] = set()
     dup: list[str] = []
@@ -170,11 +201,18 @@ def validate_briefing(workdir: Path) -> tuple[bool, list[str]]:
         errors.append(f"引用了不属于本次材料的 news_id：{', '.join(unknown)}")
     if dup:
         errors.append(f"同一条新闻被重复引用：{', '.join(dup)}")
-    missing_url = [i for i in dict.fromkeys(ids)
-                   if i in news and news[i]["url"] not in text]
-    if missing_url:
-        errors.append("以下新闻的来源链接与材料不一致（链接必须与材料逐字一致）："
-                      + ", ".join(missing_url))
+    # 链接核对按条目进行：该条目段内的第一个 URL 必须与材料逐字一致
+    # （全文字符串包含检查会被"交换链接"绕过，见 tests/test_validator.py）
+    bad_links: list[str] = []
+    for news_id, segment in citations:
+        item = news.get(news_id)
+        if item is None:
+            continue  # 未知 id 已单独报错，无材料链接可比对
+        if _first_url(segment) != item["url"] and news_id not in bad_links:
+            bad_links.append(news_id)
+    if bad_links:
+        errors.append("以下条目的来源链接缺失或与材料不一致（必须与材料逐字一致）："
+                      + ", ".join(bad_links))
     return (not errors), errors
 
 
@@ -226,18 +264,32 @@ def generate(trigger: str = "manual", client=None,
     return _execute_run(run_id, trigger, client=client, echo=echo)
 
 
+def _report_noteworthy(report: dict) -> bool:
+    """抓取报告有值得备查的内容（源失败/过期过滤/缺时间/去重）才落库。"""
+    return (any(not s["ok"] for s in report["sources"])
+            or report["duplicates_removed"] > 0
+            or any(s["stale_filtered"] or s["missing_date"]
+                   for s in report["sources"]))
+
+
 def _execute_run(run_id: int, trigger: str, client=None,
                  echo: Callable[[int, ToolCallRecord], None] | None = None) -> dict:
     """执行一次生成任务的全过程（三条入口共用的唯一执行路径）。"""
     t0 = time.monotonic()
     settings = load_or_seed_settings()
     workdir = config.settings.data_dir / "runs" / str(run_id)
+    # 简报日期以建任务时写入 runs 的 brief_date 为唯一来源
+    # （不在执行中重新取系统时间，避免跨午夜运行导致日期漂移）
+    with get_conn() as conn:
+        row = conn.execute("SELECT brief_date FROM runs WHERE id = ?",
+                           (run_id,)).fetchone()
+    brief_date = row["brief_date"] if row is not None else _brief_date()
     _update_run(run_id, status="running", started_at=now_iso())
 
     # —— 材料准备（固定步骤）——
     try:
         report = _prepare_workspace(workdir, settings)
-        if report is not None and any(not r["ok"] for r in report):
+        if report is not None and _report_noteworthy(report):
             _update_run(run_id, fetch_report=json.dumps(report, ensure_ascii=False))
     except Exception as e:
         _update_run(run_id, status="failed", fail_reason="fetch_failed",
@@ -264,7 +316,7 @@ def _execute_run(run_id: int, trigger: str, client=None,
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_task_message()},
+        {"role": "user", "content": build_task_message(brief_date)},
     ]
     deadline = time.monotonic() + config.SOFT_TOTAL_LIMIT_S
     final_status, fail_reason, fail_detail, turns = "failed", None, None, 0
