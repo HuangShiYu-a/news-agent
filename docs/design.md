@@ -209,7 +209,7 @@ README 如实描述：这是引用可追溯性检查，**不是**对摘要内容
 1. **单进程、单 worker** 启动（`uvicorn main:app --workers 1`），避免多 worker 复制 APScheduler 导致重复任务；
 2. **"立即生成"立即返回任务 ID，前端轮询**任务状态和工具日志，不引入 WebSocket；
 3. **固定新闻样例放 `fixtures/`**（受 Git 管理），因为 `data/` 被 ignore，否则克隆后演示模式跑不起来；
-4. **APScheduler 显式指定时区**（`Asia/Shanghai`），Windows 上默认时区查找会告警甚至异常；定时触发时间与简报日期判定均以此时区为准（`DAILY_RUN_AT` 环境变量，默认 08:00）；
+4. **APScheduler 显式指定时区**（`Asia/Shanghai`），Windows 上默认时区查找会告警甚至异常；定时触发时间与简报日期判定均以此时区为准（`DAILY_RUN_AT` 环境变量，默认 15:00）；
 5. **所有文件读写显式 `encoding="utf-8"`**——Windows 默认编码是 GBK，不显式指定必出乱码；
 6. **路径一律 `pathlib` / `os.path`**，不硬编码分隔符，不调用 Unix-only API；
 7. 依赖**锁定精确版本**且**显式包含 tzdata**——Windows 无系统 IANA 时区库，APScheduler 指定 Asia/Shanghai 依赖它（D10）；

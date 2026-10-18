@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     rss_freshness_hours: int = 48
 
     # 每日定时生成时间（HH:MM，Asia/Shanghai）
-    daily_run_at: str = "08:00"
+    daily_run_at: str = "15:00"
 
     # 可选：覆盖 bash 工具命令二进制目录（默认自动探测 Git for Windows usr/bin）
     tool_bin_dir: str = ""
@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     def _check_daily_run_at(cls, v: str) -> str:
         v = v.strip()
         if not re.fullmatch(r"\d{2}:\d{2}", v):
-            raise ValueError("DAILY_RUN_AT 格式须为 HH:MM，如 08:00")
+            raise ValueError("DAILY_RUN_AT 格式须为 HH:MM，如 15:00")
         hh, mm = int(v[:2]), int(v[3:])
         if not (0 <= hh <= 23 and 0 <= mm <= 59):
             raise ValueError("DAILY_RUN_AT 时间超出范围")
