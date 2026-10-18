@@ -29,7 +29,7 @@ from app.agent.tools.base import ToolRegistry
 from app.agent.tools.bash import build_bash_tool
 from app.agent.tools.fs import build_fs_tools
 from app.db import get_conn, now_iso
-from app.fetcher.rss import FetchError, assign_news_ids, fetch_all
+from app.fetcher.rss import FetchError, collect_materials
 
 # 演示默认偏好（settings 表为空时种子写入；页面保存后覆盖）
 DEFAULT_PREFERENCES = {
@@ -124,8 +124,11 @@ def _prepare_workspace(workdir: Path, settings: dict) -> list[dict] | None:
         urls = config.settings.rss_source_list
         if not urls:
             raise FetchError("真实模式需要在 .env 配置 RSS_SOURCES（逗号分隔的源列表）")
-        by_source, report = fetch_all(urls)
-        for source, items in assign_news_ids(by_source).items():
+        by_source, report = collect_materials(
+            urls,
+            now=datetime.now(ZoneInfo(config.TIMEZONE)),
+            freshness_hours=config.settings.rss_freshness_hours)
+        for source, items in by_source.items():
             lines = [json.dumps(item, ensure_ascii=False) for item in items]
             (workdir / "news" / f"{source}.jsonl").write_text(
                 "\n".join(lines) + "\n", encoding="utf-8")
@@ -261,6 +264,14 @@ def generate(trigger: str = "manual", client=None,
     return _execute_run(run_id, trigger, client=client, echo=echo)
 
 
+def _report_noteworthy(report: dict) -> bool:
+    """抓取报告有值得备查的内容（源失败/过期过滤/缺时间/去重）才落库。"""
+    return (any(not s["ok"] for s in report["sources"])
+            or report["duplicates_removed"] > 0
+            or any(s["stale_filtered"] or s["missing_date"]
+                   for s in report["sources"]))
+
+
 def _execute_run(run_id: int, trigger: str, client=None,
                  echo: Callable[[int, ToolCallRecord], None] | None = None) -> dict:
     """执行一次生成任务的全过程（三条入口共用的唯一执行路径）。"""
@@ -278,7 +289,7 @@ def _execute_run(run_id: int, trigger: str, client=None,
     # —— 材料准备（固定步骤）——
     try:
         report = _prepare_workspace(workdir, settings)
-        if report is not None and any(not r["ok"] for r in report):
+        if report is not None and _report_noteworthy(report):
             _update_run(run_id, fetch_report=json.dumps(report, ensure_ascii=False))
     except Exception as e:
         _update_run(run_id, status="failed", fail_reason="fetch_failed",

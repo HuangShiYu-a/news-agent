@@ -224,9 +224,13 @@ function renderRun(run) {
     + `<span class="status-${run.status}">${STATUS_TEXT[run.status] || run.status}</span>`;
   if (run.fail_reason) html += ` · <span class="status-failed">${esc(run.fail_reason)}</span>`;
   if (run.created_at) html += ` · ${esc(fmtTime(run.created_at))}`;
-  if (Array.isArray(run.fetch_report)) {
-    const failed = run.fetch_report.filter((r) => !r.ok);
+  if (run.fetch_report && Array.isArray(run.fetch_report.sources)) {
+    const rep = run.fetch_report;
+    const failed = rep.sources.filter((s) => !s.ok);
     if (failed.length) html += ` · ⚠ ${failed.length} 个新闻源抓取失败（任务已继续）`;
+    const stale = rep.sources.reduce((n, s) => n + (s.stale_filtered || 0), 0);
+    if (stale) html += ` · 过滤过期 ${stale} 条`;
+    if (rep.duplicates_removed) html += ` · 去重 ${rep.duplicates_removed} 条`;
   }
   $("#runStatus").innerHTML = html;
   if (run.briefing) {

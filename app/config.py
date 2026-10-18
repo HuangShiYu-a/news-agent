@@ -34,9 +34,11 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-chat"
 
-    # 新闻来源：demo=fixtures 固定虚构样例；rss=实时抓取（阶段二实现）
+    # 新闻来源：demo=fixtures 固定虚构样例；rss=实时抓取
     news_source: str = "demo"
     rss_sources: str = ""
+    # RSS 新鲜度窗口（小时）：仅保留最近 N 小时发布的新闻；0=关闭窗口过滤
+    rss_freshness_hours: int = 48
 
     # 每日定时生成时间（HH:MM，Asia/Shanghai）
     daily_run_at: str = "08:00"
@@ -50,6 +52,13 @@ class Settings(BaseSettings):
         v = v.strip().lower()
         if v not in ("demo", "rss"):
             raise ValueError("NEWS_SOURCE 只能是 demo 或 rss")
+        return v
+
+    @field_validator("rss_freshness_hours")
+    @classmethod
+    def _check_freshness(cls, v: int) -> int:
+        if not 0 <= v <= 720:
+            raise ValueError("RSS_FRESHNESS_HOURS 须在 0~720 之间（0=关闭窗口过滤）")
         return v
 
     @field_validator("daily_run_at")
