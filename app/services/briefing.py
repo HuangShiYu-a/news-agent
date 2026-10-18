@@ -42,6 +42,11 @@ DEFAULT_PREFERENCES = {
 _BRIEFING_FILENAME = "briefing.md"
 _NEWS_ID_RE = re.compile(r"\[(N\d+)\]")
 _NO_MATCH_PHRASE = "本期暂无匹配新闻"
+# 条目锚点：行首列表标记（1. / - / * 等）+ 方括号 news_id，允许其间有粗体/斜体标记
+_ENTRY_RE = re.compile(r"(?m)^\s*(?:\d+[.、)]|[-*])\s*[*_]*\s*\[(N\d+)\]")
+# URL 提取：止于空白与常见中英文标点/括号；尾部标点再单独剥离
+_URL_RE = re.compile(r"https?://[^\s　，。、；：（）()【】\[\]<>\"'“”]+")
+_URL_TRAILING = ".,;:!?。，、；：！？"
 _RUN_UPDATABLE = {"status", "fail_reason", "fail_detail", "fetch_report",
                   "briefing", "started_at", "ended_at"}
 
@@ -142,6 +147,28 @@ def load_material_news(workdir: Path) -> dict[str, dict]:
     return news
 
 
+def _first_url(segment: str) -> str | None:
+    m = _URL_RE.search(segment)
+    return m.group(0).rstrip(_URL_TRAILING) if m else None
+
+
+def _extract_citations(text: str) -> list[tuple[str, str]]:
+    """按条目结构提取被引用的新闻条目，返回 [(news_id, 条目段文本)]。
+
+    优先以"行首列表标记 + [news_id]"为条目锚点——正文中非条目位置的
+    提及不计入引用；若全文没有任何条目锚点，退化为按任意位置的
+    [news_id] 分段（兼容模型未使用列表标记的排版）。
+    """
+    anchors = list(_ENTRY_RE.finditer(text))
+    if not anchors:
+        anchors = list(_NEWS_ID_RE.finditer(text))
+    citations: list[tuple[str, str]] = []
+    for i, m in enumerate(anchors):
+        end = anchors[i + 1].start() if i + 1 < len(anchors) else len(text)
+        citations.append((m.group(1), text[m.end():end]))
+    return citations
+
+
 def validate_briefing(workdir: Path) -> tuple[bool, list[str]]:
     """产物校验（design.md §9）：引用可追溯性检查，非事实核查。"""
     path = workdir / _BRIEFING_FILENAME
@@ -151,11 +178,12 @@ def validate_briefing(workdir: Path) -> tuple[bool, list[str]]:
     if not text.strip():
         return False, ["briefing.md 是空文件"]
     news = load_material_news(workdir)
-    ids = _NEWS_ID_RE.findall(text)
-    if not ids:
+    citations = _extract_citations(text)
+    if not citations:
         if _NO_MATCH_PHRASE in text:
             return True, []
         return False, ['简报中没有任何 [news_id] 引用，也未声明"本期暂无匹配新闻"']
+    ids = [news_id for news_id, _ in citations]
     errors: list[str] = []
     seen: set[str] = set()
     dup: list[str] = []
@@ -170,11 +198,18 @@ def validate_briefing(workdir: Path) -> tuple[bool, list[str]]:
         errors.append(f"引用了不属于本次材料的 news_id：{', '.join(unknown)}")
     if dup:
         errors.append(f"同一条新闻被重复引用：{', '.join(dup)}")
-    missing_url = [i for i in dict.fromkeys(ids)
-                   if i in news and news[i]["url"] not in text]
-    if missing_url:
-        errors.append("以下新闻的来源链接与材料不一致（链接必须与材料逐字一致）："
-                      + ", ".join(missing_url))
+    # 链接核对按条目进行：该条目段内的第一个 URL 必须与材料逐字一致
+    # （全文字符串包含检查会被"交换链接"绕过，见 tests/test_validator.py）
+    bad_links: list[str] = []
+    for news_id, segment in citations:
+        item = news.get(news_id)
+        if item is None:
+            continue  # 未知 id 已单独报错，无材料链接可比对
+        if _first_url(segment) != item["url"] and news_id not in bad_links:
+            bad_links.append(news_id)
+    if bad_links:
+        errors.append("以下条目的来源链接缺失或与材料不一致（必须与材料逐字一致）："
+                      + ", ".join(bad_links))
     return (not errors), errors
 
 

@@ -76,6 +76,34 @@ def test_url_mismatch(tmp_path):
     assert not ok and any("链接" in e for e in errors)
 
 
+def test_swapped_urls_rejected(tmp_path):
+    """交换两条新闻的链接：两个 URL 都出现在全文中，但各自不在自己的条目里。"""
+    run = make_workdir(tmp_path)
+    text = ("1. [N0001] a\n   链接：https://x/N0002\n"
+            "2. [N0002] b\n   链接：https://x/N0001\n")
+    write_briefing(run, text)
+    ok, errors = validate_briefing(run)
+    assert not ok and any("链接" in e for e in errors)
+
+
+def test_missing_link_rejected(tmp_path):
+    """条目只写 news_id 不写链接，应被拒绝。"""
+    run = make_workdir(tmp_path)
+    write_briefing(run, "1. [N0001] a\n   摘要：忘了写链接\n")
+    ok, errors = validate_briefing(run)
+    assert not ok and any("链接" in e for e in errors)
+
+
+def test_prose_mention_does_not_break_entries(tmp_path):
+    """正文中非条目位置提及 [news_id]，不应干扰条目校验（条目按结构提取）。"""
+    run = make_workdir(tmp_path)
+    text = ("# 简报\n\n延伸阅读：[N0002] 与本主题相关。\n\n"
+            "1. [N0001] a\n   链接：https://x/N0001\n")
+    write_briefing(run, text)
+    ok, errors = validate_briefing(run)
+    assert ok, errors
+
+
 def test_no_match_phrase_allowed(tmp_path):
     run = make_workdir(tmp_path)
     write_briefing(run, "# 简报\n\n本期暂无匹配新闻。\n")
