@@ -21,9 +21,11 @@
 ```bat
 git clone <仓库地址> && cd news-agent
 py -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 copy .env.example .env
 ```
+
+> 国内网络建议走上面的清华 PyPI 镜像（实测约 1 分钟；直连 PyPI 可能需 5 分钟以上）。若本机系统代理已失效导致 pip 报 `ProxyError`，请临时关闭系统代理或设置 `NO_PROXY=*`。
 
 编辑 `.env`，填入 `LLM_API_KEY`（DeepSeek，https://platform.deepseek.com 申请；**唯一必填项**，密钥只走环境变量不进版本库），然后启动：
 
