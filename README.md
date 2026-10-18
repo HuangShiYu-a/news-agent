@@ -98,4 +98,4 @@ tests/                    # 循环正确性、安全边界、校验、路由、�
 3. 为什么这些取舍足以完成这道题、哪些被刻意留作演进方向；
 4. 推送为何选站内通知。
 
-详见 [docs/design.md](docs/design.md) §13 与 §14 决策记录。录屏演示脚本见 [docs/demo-script.md](docs/demo-script.md)。
+详见 [docs/design.md](docs/design.md) §13 与 §14 决策记录；实施过程与三阶段验收实测记录见 [docs/process.md](docs/process.md)；录屏演示脚本见 [docs/demo-script.md](docs/demo-script.md)。
