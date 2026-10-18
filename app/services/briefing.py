@@ -267,6 +267,12 @@ def _execute_run(run_id: int, trigger: str, client=None,
     t0 = time.monotonic()
     settings = load_or_seed_settings()
     workdir = config.settings.data_dir / "runs" / str(run_id)
+    # 简报日期以建任务时写入 runs 的 brief_date 为唯一来源
+    # （不在执行中重新取系统时间，避免跨午夜运行导致日期漂移）
+    with get_conn() as conn:
+        row = conn.execute("SELECT brief_date FROM runs WHERE id = ?",
+                           (run_id,)).fetchone()
+    brief_date = row["brief_date"] if row is not None else _brief_date()
     _update_run(run_id, status="running", started_at=now_iso())
 
     # —— 材料准备（固定步骤）——
@@ -299,7 +305,7 @@ def _execute_run(run_id: int, trigger: str, client=None,
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_task_message()},
+        {"role": "user", "content": build_task_message(brief_date)},
     ]
     deadline = time.monotonic() + config.SOFT_TOTAL_LIMIT_S
     final_status, fail_reason, fail_detail, turns = "failed", None, None, 0
